@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Subnet Calculator — Homelab Starter Guide (Korra Academy)</title>
+<meta name="description" content="Free offline IPv4 subnet calculator in one HTML file: network address, broadcast, first and last host, mask, wildcard and host count for any CIDR. From Korra.Training.">
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --bad:#f87171; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f8fafc; --card:#ffffff; --text:#0f172a; --muted:#475569; --accent:#0284c7; --bad:#dc2626; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); line-height:1.5; }
+  main { max-width:640px; margin:0 auto; padding:2rem 1rem; }
+  h1 { font-size:1.6rem; margin:0 0 .25rem; }
+  p.sub { color:var(--muted); margin:0 0 1.5rem; }
+  .card { background:var(--card); border-radius:12px; padding:1.25rem; margin-bottom:1rem; box-shadow:0 1px 3px rgba(0,0,0,.2); }
+  label { display:block; font-weight:600; margin-bottom:.4rem; }
+  .row { display:flex; gap:.5rem; }
+  input { flex:1; font-size:1.1rem; padding:.6rem .75rem; border-radius:8px; border:1px solid var(--muted); background:transparent; color:var(--text); font-family:ui-monospace,Menlo,Consolas,monospace; }
+  button { font-size:1rem; padding:.6rem 1rem; border-radius:8px; border:0; background:var(--accent); color:#fff; cursor:pointer; }
+  .err { color:var(--bad); margin-top:.5rem; min-height:1.5em; }
+  table { width:100%; border-collapse:collapse; }
+  td { padding:.5rem .25rem; border-bottom:1px solid rgba(148,163,184,.25); }
+  td:first-child { color:var(--muted); width:45%; }
+  td:last-child { font-family:ui-monospace,Menlo,Consolas,monospace; }
+  .bin { font-size:.8rem; color:var(--muted); word-break:break-all; }
+  footer { color:var(--muted); font-size:.85rem; margin-top:1.5rem; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Subnet Calculator</h1>
+  <p class="sub">IPv4 only. Works offline. Do the maths on paper first, then check here.</p>
+
+  <div class="card">
+    <label for="cidr">IP address / prefix</label>
+    <div class="row">
+      <input id="cidr" value="192.168.1.50/24" autocomplete="off" spellcheck="false">
+      <button id="go">Calculate</button>
+    </div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div class="card">
+    <table id="out"></table>
+  </div>
+
+  <footer>
+    Part of the <a href="https://github.com/korra-academy/homelab-starter-guide">Homelab Starter Guide</a> by
+    <a href="https://korra.academy/">Korra Academy</a> · <a href="https://korra.training/">Korra.Training</a>. MIT licensed.
+  </footer>
+</main>
+
+<script>
+  // ---- Core maths. Every IPv4 address is a 32-bit number; subnetting is bit masking. ----
+  function parseCidr(text) {
+    var m = /^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\s*\/\s*(\d{1,2})\s*$/.exec(text);
+    if (!m) throw new Error('Format must be a.b.c.d/prefix, e.g. 10.0.0.1/8');
+    var octets = m.slice(1, 5).map(Number);
+    var prefix = Number(m[5]);
+    if (octets.some(function (o) { return o > 255; })) throw new Error('Each octet must be 0–255');
+    if (prefix > 32) throw new Error('Prefix must be 0–32');
+    // >>> 0 keeps the result as an unsigned 32-bit number
+    var ip = ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
+    return { ip: ip, prefix: prefix };
+  }
+
+  function maskFromPrefix(prefix) {
+    // /0 is a special case: shifting by 32 is undefined in JS, so handle it directly
+    return prefix === 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) >>> 0;
+  }
+
+  function toDotted(n) {
+    return [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
+  }
+
+  function toBinary(n) {
+    return [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]
+      .map(function (o) { return o.toString(2).padStart(8, '0'); }).join('.');
+  }
+
+  function calculate(text) {
+    var p = parseCidr(text);
+    var mask = maskFromPrefix(p.prefix);
+    var wildcard = (~mask) >>> 0;
+    var network = (p.ip & mask) >>> 0;
+    var broadcast = (network | wildcard) >>> 0;
+    var total = Math.pow(2, 32 - p.prefix);
+    var usable, firstHost, lastHost;
+    if (p.prefix === 32) {        // single host route
+      usable = 1; firstHost = network; lastHost = network;
+    } else if (p.prefix === 31) { // RFC 3021 point-to-point: both addresses usable
+      usable = 2; firstHost = network; lastHost = broadcast;
+    } else {
+      usable = total - 2; firstHost = network + 1; lastHost = broadcast - 1;
+    }
+    var cls = p.ip >>> 24;
+    var klass = cls < 128 ? 'A' : cls < 192 ? 'B' : cls < 224 ? 'C' : cls < 240 ? 'D (multicast)' : 'E (reserved)';
+    var priv = (cls === 10) || (cls === 172 && ((p.ip >>> 16) & 255) >= 16 && ((p.ip >>> 16) & 255) <= 31) || (cls === 192 && ((p.ip >>> 16) & 255) === 168);
+    return {
+      input: toDotted(p.ip) + '/' + p.prefix,
+      network: toDotted(network) + '/' + p.prefix,
+      mask: toDotted(mask),
+      maskBin: toBinary(mask),
+      wildcard: toDotted(wildcard),
+      broadcast: toDotted(broadcast),
+      firstHost: toDotted(firstHost),
+      lastHost: toDotted(lastHost),
+      total: total,
+      usable: usable,
+      klass: klass,
+      priv: priv ? 'Yes (RFC 1918)' : 'No'
+    };
+  }
+
+  // ---- UI ----
+  function render(r) {
+    var rows = [
+      ['Input', r.input],
+      ['Network address', r.network],
+      ['Subnet mask', r.mask + '<div class="bin">' + r.maskBin + '</div>'],
+      ['Wildcard mask', r.wildcard],
+      ['Broadcast address', r.broadcast],
+      ['First usable host', r.firstHost],
+      ['Last usable host', r.lastHost],
+      ['Total addresses', r.total.toLocaleString()],
+      ['Usable hosts', r.usable.toLocaleString()],
+      ['Classful class (historical)', r.klass],
+      ['Private address', r.priv]
+    ];
+    document.getElementById('out').innerHTML = rows.map(function (row) {
+      return '<tr><td>' + row[0] + '</td><td>' + row[1] + '</td></tr>';
+    }).join('');
+  }
+
+  function run() {
+    var err = document.getElementById('err');
+    try {
+      render(calculate(document.getElementById('cidr').value));
+      err.textContent = '';
+    } catch (e) {
+      err.textContent = e.message;
+    }
+  }
+
+  document.getElementById('go').addEventListener('click', run);
+  document.getElementById('cidr').addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
+  run();
+</script>
+</body>
+</html>
